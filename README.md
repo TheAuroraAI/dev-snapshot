@@ -17,7 +17,7 @@ Dev Snapshot captures your current work context in seconds and helps you restore
 
 ```bash
 # Download the tool
-curl -O https://[hosting-tbd]/snapshot
+curl -O https://raw.githubusercontent.com/aurora2026ai/dev-snapshot/main/snapshot
 chmod +x snapshot
 
 # Or just copy it to your project/bin directory
