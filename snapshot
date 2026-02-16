@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+"""
+Dev Snapshot - Quick context preservation for developers
+Helps you save and restore your work context when interrupted
+"""
+
+import argparse
+import json
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+from uuid import uuid4
+
+
+class Snapshot:
+    def __init__(self, snapshots_dir=None):
+        if snapshots_dir:
+            self.snapshots_dir = Path(snapshots_dir)
+        else:
+            # Store in ~/.dev-snapshots by default
+            self.snapshots_dir = Path.home() / '.dev-snapshots'
+        self.snapshots_dir.mkdir(exist_ok=True)
+
+    def run_command(self, cmd, cwd=None):
+        """Run a shell command and return output."""
+        try:
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                cwd=cwd or Path.cwd()
+            )
+            return result.stdout.strip()
+        except Exception as e:
+            return f"Error: {e}"
+
+    def is_git_repo(self):
+        """Check if current directory is a git repository."""
+        result = subprocess.run(
+            ['git', 'rev-parse', '--git-dir'],
+            capture_output=True,
+            cwd=Path.cwd()
+        )
+        return result.returncode == 0
+
+    def capture_context(self, note=""):
+        """Capture current development context."""
+        context = {
+            'id': str(uuid4())[:8],
+            'timestamp': datetime.now().isoformat(),
+            'note': note,
+            'cwd': str(Path.cwd()),
+        }
+
+        if self.is_git_repo():
+            context['git'] = {
+                'branch': self.run_command('git branch --show-current'),
+                'status': self.run_command('git status --short'),
+                'last_commit': self.run_command('git log -1 --oneline'),
+            }
+        else:
+            context['git'] = None
+
+        # Recent shell history (last 10 commands)
+        history_file = Path.home() / '.bash_history'
+        if history_file.exists():
+            try:
+                history = history_file.read_text().strip().split('\n')
+                context['recent_commands'] = history[-10:]
+            except:
+                context['recent_commands'] = []
+        else:
+            context['recent_commands'] = []
+
+        return context
+
+    def save_snapshot(self, note=""):
+        """Save a snapshot of current context."""
+        context = self.capture_context(note)
+        snapshot_id = context['id']
+
+        # Save to file
+        snapshot_file = self.snapshots_dir / f"{snapshot_id}.json"
+        with open(snapshot_file, 'w') as f:
+            json.dump(context, f, indent=2)
+
+        print(f"✓ Snapshot saved: {snapshot_id}")
+        print(f"  Note: {note or '(none)'}")
+        print(f"  Location: {snapshot_file}")
+
+        return snapshot_id
+
+    def list_snapshots(self):
+        """List all saved snapshots."""
+        snapshots = sorted(self.snapshots_dir.glob('*.json'), key=lambda x: x.stat().st_mtime, reverse=True)
+
+        if not snapshots:
+            print("No snapshots found.")
+            return
+
+        print(f"\nSnapshots in {self.snapshots_dir}:\n")
+        for snap_file in snapshots:
+            with open(snap_file) as f:
+                data = json.load(f)
+
+            timestamp = datetime.fromisoformat(data['timestamp'])
+            time_str = timestamp.strftime('%Y-%m-%d %H:%M')
+
+            print(f"  {data['id']} - {time_str}")
+            if data['note']:
+                print(f"    Note: {data['note']}")
+            if data['git']:
+                print(f"    Branch: {data['git']['branch']}")
+            print(f"    Dir: {data['cwd']}")
+            print()
+
+    def get_snapshot(self, snapshot_id):
+        """Get snapshot data by ID."""
+        snapshot_file = self.snapshots_dir / f"{snapshot_id}.json"
+        if not snapshot_file.exists():
+            print(f"Error: Snapshot {snapshot_id} not found")
+            return None
+
+        with open(snapshot_file) as f:
+            return json.load(f)
+
+    def restore_snapshot(self, snapshot_id):
+        """Display snapshot information for manual restoration."""
+        data = self.get_snapshot(snapshot_id)
+        if not data:
+            return
+
+        print(f"\n=== Snapshot {snapshot_id} ===")
+        print(f"Saved: {data['timestamp']}")
+        print(f"Note: {data['note'] or '(none)'}")
+        print(f"\nDirectory: {data['cwd']}")
+
+        print("\nTo restore context, run:")
+        print(f"  cd {data['cwd']}")
+
+        if data['git']:
+            print(f"\nGit context:")
+            print(f"  Branch: {data['git']['branch']}")
+            if data['git']['status']:
+                print(f"  Status:\n{data['git']['status']}")
+            print(f"  Last commit: {data['git']['last_commit']}")
+
+        if data['recent_commands']:
+            print(f"\nRecent commands:")
+            for cmd in data['recent_commands'][-5:]:
+                print(f"  {cmd}")
+
+    def delete_snapshot(self, snapshot_id):
+        """Delete a snapshot."""
+        snapshot_file = self.snapshots_dir / f"{snapshot_id}.json"
+        if not snapshot_file.exists():
+            print(f"Error: Snapshot {snapshot_id} not found")
+            return
+
+        snapshot_file.unlink()
+        print(f"✓ Deleted snapshot {snapshot_id}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Dev Snapshot - Save and restore development context'
+    )
+    subparsers = parser.add_subparsers(dest='command', help='Commands')
+
+    # Save command
+    save_parser = subparsers.add_parser('save', help='Save current context')
+    save_parser.add_argument('note', nargs='?', default='', help='Note about what you\'re working on')
+
+    # List command
+    subparsers.add_parser('list', help='List all snapshots')
+
+    # Restore command
+    restore_parser = subparsers.add_parser('restore', help='Show snapshot details for restoration')
+    restore_parser.add_argument('snapshot_id', help='Snapshot ID to restore')
+
+    # Delete command
+    delete_parser = subparsers.add_parser('delete', help='Delete a snapshot')
+    delete_parser.add_argument('snapshot_id', help='Snapshot ID to delete')
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    snapshot = Snapshot()
+
+    if args.command == 'save':
+        snapshot.save_snapshot(args.note)
+    elif args.command == 'list':
+        snapshot.list_snapshots()
+    elif args.command == 'restore':
+        snapshot.restore_snapshot(args.snapshot_id)
+    elif args.command == 'delete':
+        snapshot.delete_snapshot(args.snapshot_id)
+
+
+if __name__ == '__main__':
+    main()
